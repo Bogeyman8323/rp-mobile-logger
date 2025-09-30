@@ -1,3 +1,12 @@
+import os
+from pathlib import Path
+import streamlit as st
+
+picker_component_path = str((Path(__file__).parent / "picker_component").resolve())
+st.write("Picker component path:", picker_component_path)
+st.write("Exists?", os.path.isdir(picker_component_path))
+st.write("Contains index.html?", os.path.isfile(os.path.join(picker_component_path, "index.html")))
+
 # streamlit_mobile_app_gdrive.py
 import io
 from pathlib import Path
