@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Drive Picker Component</title>
+    <script src="https://apis.google.com/js/api.js"></script>
+    <script>
+      const sendValue = (val) => {
+        const msg = { isStreamlitMessage: true, type: "streamlit:setComponentValue", value: val };
+        window.parent.postMessage(msg, "*");
+      };
+
+      function openPicker(oauthToken, apiKey, appId, multiselect) {
+        gapi.load("picker", () => {
+          const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+            .setIncludeFolders(false)
+            .setSelectFolderEnabled(false);
+
+          const picker = new google.picker.PickerBuilder()
+            .addView(view)
+            .enableFeature(google.picker.Feature.NAV_HIDDEN, false)
+            .enableFeature(google.picker.Feature.MULTISELECT_ENABLED, multiselect === "true")
+            .setOAuthToken(oauthToken)
+            .setDeveloperKey(apiKey)
+            .setAppId(appId)
+            .setCallback((data) => {
+              if (data.action === google.picker.Action.PICKED) {
+                const ids = data.docs.map(d => d.id);
+                sendValue(ids);
+              } else if (data.action === google.picker.Action.CANCEL) {
+                sendValue([]);
+              }
+            })
+            .build();
+          picker.setVisible(true);
+        });
+      }
+
+      window.addEventListener("message", (event) => {
+        const { data } = event;
+        if (!data || !data.args) return;
+        const { token, apiKey, appId, multiselect } = data.args;
+        if (token && apiKey && appId) {
+          openPicker(token, apiKey, appId, multiselect);
+        }
+      });
+
+      window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:componentReady" }, "*");
+      window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: 60 }, "*");
+    </script>
+  </head>
+  <body>
+    <button onclick="window.parent.postMessage({ isStreamlitMessage: true, type: 'streamlit:reregisterComponent' }, '*')">
+      Open Google Drive Picker…
+    </button>
+  </body>
+</html>
