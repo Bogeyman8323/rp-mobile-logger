@@ -1,26 +1,13 @@
-
-
-# streamlit_mobile_app_gdrive.py
 import io
 from pathlib import Path
 import streamlit as st
 from openpyxl import load_workbook
 from google_auth import build_auth_url, exchange_code_for_token, get_creds, sign_out
 from gdrive_io import DriveClient, MIMETYPE_XLSX
-from streamlit.components.v1 import declare_component
 
 st.set_page_config(page_title="RP Logger (Mobile + Google Drive)", page_icon="📱", layout="centered")
 
-st.title("📱 RP Set Logger — Mobile + Google Drive (drive.file + Picker)")
-
-# Register local Picker component
-picker_component_path = str((Path(__file__).parent / "picker_component").resolve())
-drive_picker = declare_component("drive_picker", path=picker_component_path)
-
-def pick_from_drive(oauth_token: str, api_key: str, app_id: str, multiselect: bool = False):
-    """Render Picker and return list of fileIds selected by user."""
-    file_ids = drive_picker(token=oauth_token, apiKey=api_key, appId=app_id, multiselect=str(multiselect))
-    return file_ids or []
+st.title("📱 RP Set Logger — Mobile + Google Drive (Drive API listing + search)")
 
 # --- Auth ---
 with st.expander("Authentication", expanded=True):
@@ -36,30 +23,115 @@ with st.expander("Authentication", expanded=True):
             st.rerun()
 
 client = DriveClient(get_creds())
-api_key = st.secrets["google"]["api_key"]
-app_id  = st.secrets["google"]["app_id"]
-access_token = get_creds().token
 
-st.header("Select your tracker (Google Picker)")
-st.caption("Least‑privilege: scope is `drive.file`. Pick your .xlsx tracker to grant access only to that file.")
+st.header("Select your tracker (Drive file search)")
+st.caption("This app requests a Drive scope so it can list files. Search, filter by owner, and load more pages as needed.")
 
-picked_ids = pick_from_drive(access_token, api_key, app_id, multiselect=False)
-file_id = None
-if picked_ids:
-    file_id = picked_ids[0]
-    st.success(f"Selected fileId: {file_id}")
+# --- Search controls ---
+DEFAULT_PAGE_SIZE = 25
+search_col, owner_col, size_col = st.columns([3, 2, 1])
+
+with search_col:
+    search_term = st.text_input("Filename contains (optional)", placeholder=".xlsx or part of file name")
+with owner_col:
+    owner_filter = st.text_input("Owner name (optional)", placeholder="owner display name")
+with size_col:
+    page_size = int(st.number_input("Page size", min_value=5, max_value=200, value=DEFAULT_PAGE_SIZE, step=5))
+
+# Build Drive query (restrict to .xlsx files)
+query_base = f"mimeType='{MIMETYPE_XLSX}'"
+if search_term:
+    sanitized = search_term.replace("'", "\\'")
+    query_base += f" and name contains '{sanitized}'"
+
+# Initialize session state for pagination & accumulated results
+if 'drive_files' not in st.session_state:
+    st.session_state.drive_files = []
+if 'drive_next_token' not in st.session_state:
+    st.session_state.drive_next_token = None
+if 'drive_query' not in st.session_state or st.session_state.drive_query != query_base or st.session_state.get('drive_page_size') != page_size or st.session_state.get('drive_owner_filter') != owner_filter:
+    # If query/filters changed since last load, clear accumulated files so search starts fresh
+    st.session_state.drive_files = []
+    st.session_state.drive_next_token = None
+    st.session_state.drive_query = query_base
+    st.session_state.drive_page_size = page_size
+    st.session_state.drive_owner_filter = owner_filter
+
+def load_next_page():
+    try:
+        resp = client.list_files(q=st.session_state.drive_query, page_size=st.session_state.drive_page_size, page_token=st.session_state.drive_next_token)
+        new_files = resp.get("files", [])
+        # Optionally filter by owner display name client-side
+        if st.session_state.drive_owner_filter:
+            of = st.session_state.drive_owner_filter.strip().lower()
+            filtered = []
+            for f in new_files:
+                owners = f.get("owners", []) or []
+                owner_names = [o.get("displayName", "").lower() for o in owners]
+                if any(of in n for n in owner_names):
+                    filtered.append(f)
+            new_files = filtered
+        # Append unique by id (avoid duplicates across pages)
+        existing_ids = {f["id"] for f in st.session_state.drive_files}
+        to_add = [f for f in new_files if f["id"] not in existing_ids]
+        st.session_state.drive_files.extend(to_add)
+        st.session_state.drive_next_token = resp.get("nextPageToken")
+    except Exception as e:
+        st.error(f"Failed to list Drive files: {e}")
+
+# First load button (or auto-load if empty)
+if not st.session_state.drive_files:
+    if st.button("Search Drive"):
+        load_next_page()
+else:
+    st.write(f"Found {len(st.session_state.drive_files)} file(s) (page token present: {bool(st.session_state.drive_next_token)})")
+    # Owner filter dropdown derived from loaded files (includes typed owner filter option as well)
+    owners = []
+    for f in st.session_state.drive_files:
+        o = f.get("owners", [{}])[0].get("displayName", "")
+        if o and o not in owners:
+            owners.append(o)
+    owners_display = ["All"] + owners
+    selected_owner = st.selectbox("Filter owner (client-side)", owners_display, index=0)
+    # Apply selected_owner filter to displayed list (client-side)
+    display_files = st.session_state.drive_files
+    if selected_owner != "All":
+        display_files = [f for f in display_files if (f.get("owners", [{}])[0].get("displayName", "") == selected_owner)]
+
+    # Build labels and allow selection
+    labels = [f"{f['name']} — {f.get('owners',[{}])[0].get('displayName','')}" for f in display_files]
+    if labels:
+        idx = st.selectbox("Choose tracker (from results)", options=list(range(len(display_files))), format_func=lambda i: labels[i], index=0)
+        chosen_file = display_files[idx]
+        file_id = chosen_file["id"]
+        st.success(f"Selected: {chosen_file['name']}")
+    else:
+        st.info("No files match the current owner filter. Try 'All' or adjust search.")
+
+    # Load more if available
+    if st.session_state.drive_next_token:
+        if st.button("Load more"):
+            load_next_page()
+
+    # Optionally allow clearing results to run a fresh search
+    if st.button("New search / Clear results"):
+        st.session_state.drive_files = []
+        st.session_state.drive_next_token = None
+        st.experimental_rerun()
+
+    # --- Open selected file button (keeps the previous app flow) ---
+    if 'file_id' in locals() and file_id and st.button("📥 Open from Drive"):
+        try:
+            content = client.download_file(file_id)
+            st.session_state['wb_bytes'] = content
+            st.session_state['current_file_id'] = file_id
+            st.success("Workbook loaded. Log your sets below and save back to Drive.")
+        except Exception as e:
+            st.error(f"Download failed: {e}")
 
 st.divider()
 
-if file_id and st.button("📥 Open from Drive"):
-    try:
-        content = client.download_file(file_id)
-        st.session_state['wb_bytes'] = content
-        st.session_state['current_file_id'] = file_id
-        st.success("Workbook loaded. Log your sets below and save back to Drive.")
-    except Exception as e:
-        st.error(f"Download failed: {e}")
-
+# The rest of the workbook editing UI is unchanged; if wb_bytes is present, load workbook and continue
 if 'wb_bytes' in st.session_state:
     wb_bytes = st.session_state['wb_bytes']
     wb = load_workbook(io.BytesIO(wb_bytes))
@@ -72,6 +144,7 @@ if 'wb_bytes' in st.session_state:
     ws = wb[week]
 
     rows = list(ws.iter_rows(min_row=2, values_only=True))
+
     all_days = [r[0] for r in rows if r and r[0]]
     ordered_days = [d for d in DEFAULT_DAYS if d in all_days] + [d for d in all_days if d not in DEFAULT_DAYS]
     if not ordered_days:
@@ -156,6 +229,9 @@ if 'wb_bytes' in st.session_state:
                 updated = client.update_file_content(st.session_state['current_file_id'], st.session_state['wb_bytes'], MIMETYPE_XLSX)
                 st.success("Uploaded successfully to Google Drive.")
             except Exception as e:
+                st.error(f"Upload failed: {e}")
+else:
+    st.info("Use the search controls above to find a spreadsheet in Drive, then choose and open it.")
                 st.error(f"Upload failed: {e}")
 else:
     st.info("Pick your tracker with the Google Picker to start logging.")
