@@ -1,7 +1,7 @@
-# gdrive_io.py
 from io import BytesIO
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from typing import List, Dict, Optional
 
 MIMETYPE_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -25,3 +25,29 @@ class DriveClient:
         """Overwrite file content (resumable upload)."""
         media = MediaIoBaseUpload(BytesIO(content_bytes), mimetype=mime_type, resumable=True)
         return self.service.files().update(fileId=file_id, media_body=media).execute()
+
+    def list_files(self, q: Optional[str] = None, page_size: int = 100, page_token: Optional[str] = None) -> Dict:
+        """
+        List files in the user's Drive with optional pagination.
+
+        Args:
+            q: An optional Drive API query string (https://developers.google.com/drive/api/v3/search-files).
+               Example to list spreadsheets: "mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
+            page_size: max results to return per page (Drive supports up to 1000; default to 100)
+            page_token: optional token for pagination
+
+        Returns:
+            A dict with keys:
+              - files: list of file dicts with at least 'id', 'name', 'mimeType', 'owners'
+              - nextPageToken: token string or None
+        """
+        resp = self.service.files().list(
+            q=q,
+            pageSize=page_size,
+            fields="nextPageToken, files(id, name, mimeType, owners(displayName))",
+            pageToken=page_token
+        ).execute()
+        return {
+            "files": resp.get("files", []),
+            "nextPageToken": resp.get("nextPageToken")
+        }
